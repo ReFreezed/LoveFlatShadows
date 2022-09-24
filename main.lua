@@ -1,5 +1,5 @@
 --
--- Example program: Render sprites with 3D-looking shadows from a light source.
+-- Example program: Render sprites with shadows from a light source.
 -- by Marcus 'ReFreezed' Thunström
 -- License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)
 --
@@ -70,9 +70,15 @@ local vertices = {
 local quadMesh = LG.newMesh(vertexFormat, vertices, "fan", "stream")
 
 local quadShader = LG.newShader[[//GLSL
-	// This shader draws a quad with perspective correct texture.
+	//
+	// This shader draws a quad with perspective correct texture mapping.
 	// (See https://en.wikipedia.org/wiki/Texture_mapping#Perspective_correctness)
-
+	//
+	// The perspective probably isn't exactly correct for the shadows we render,
+	// but it's good enough, and this code could be used for other things too.
+	//
+	// Also see drawPerspectiveCorrectQuad()!
+	//
 	varying float z;
 
 	#ifdef VERTEX
