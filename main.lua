@@ -1,7 +1,10 @@
 --
 -- Example program: Render sprites with 3D-looking shadows from a light source.
+-- by Marcus 'ReFreezed' Thunström
+-- License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)
 --
-local LG = love.graphics
+local LG  = love.graphics
+local TAU = 2*math.pi
 
 local images = {
 	sprites = LG.newImage("gfx/sprites.png"),
@@ -38,6 +41,54 @@ local lightSource = addNewEntity("light", nil, 0,0, false)
 
 
 
+local vertexFormat = {
+	{"VertexPosition", "float", 3}, -- x,y,z
+	{"VertexTexCoord", "float", 2}, -- u,v
+}
+local vertices = {
+	{0,0,0, 0,0},
+	{0,0,0, 0,0},
+	{0,0,0, 0,0},
+	{0,0,0, 0,0},
+}
+local quadMesh = LG.newMesh(vertexFormat, vertices, "fan", "stream")
+
+local quadShader = LG.newShader[[//GLSL
+	// This shader draws a quad with perspective correct texture.
+	// (See https://en.wikipedia.org/wiki/Texture_mapping#Perspective_correctness)
+
+	varying float z;
+
+	#ifdef VERTEX
+		vec4 position(mat4 proj, vec4 vertPos) {
+			z         = vertPos.z;
+			vertPos.z = 0.0; // The Z is for the texture, not the vertex.
+			return proj * vertPos;
+		}
+	#endif
+
+	#ifdef PIXEL
+		uniform vec4 quad; // {x,y,w,h}
+
+		vec4 effect(vec4 loveColor, Image tex, vec2 texUv, vec2 screenPos) {
+			texUv       = quad.xy + quad.zw * texUv/z;
+			vec4 sample = Texel(tex, texUv);
+
+			// DEBUG
+			if (1==0) {
+				if (mod(floor(texUv.x*64.0)+floor(texUv.y*64.0), 2.0) == 0.0)  return vec4(1.0, 0.0, 0.0, 1.0); // Show pixel grid (64x64 image).
+				if (sample.a == 0.0)        sample     = vec4(1.0); // Show transparent pixels.
+				if (texUv.x-texUv.y < 0.0)  sample.rgb = mix(sample.rgb, vec3(0.0, 1.0, 0.0), 0.3); // Differentiate triangles.
+				return sample;
+			}
+
+			return sample * loveColor;
+		}
+	#endif
+]]
+
+
+
 function love.update(dt)
 	local moveX = 0
 	local moveY = 0
@@ -57,78 +108,87 @@ end
 
 
 
-local vertexFormat = {
-	{"VertexPosition", "float", 3}, -- x,y,z
-	{"VertexTexCoord", "float", 2}, -- u,v
-}
-local vertices = {
-	{0,0,0, 0,0},
-	{0,0,0, 0,0},
-	{0,0,0, 0,0},
-	{0,0,0, 0,0},
-}
-local mesh = LG.newMesh(vertexFormat, vertices, "fan", "stream")
+-- point = intersectLines( lineA, lineB )
+local function intersectLines(ax1,ay1, ax2,ay2,  bx1,by1, bx2,by2)
+	local dx1 = ax2 - ax1
+	local dy1 = ay2 - ay1
+	local dx2 = bx2 - bx1
+	local dy2 = by2 - by1
 
-local quadShader = LG.newShader[[//GLSL
-	// This shader draws a quad with perspective correct texture.
-	// (See https://en.wikipedia.org/wiki/Texture_mapping#Perspective_correctness)
+	local det = dx1*dy2 - dx2*dy1
+	if det == 0 then  return nil  end -- Parallel lines.
 
-	varying float z;
+	local t = (dx2*(ay1-by1) - dy2*(ax1-bx1)) / det
+	return ax1+t*dx1, ay1+t*dy1
+end
 
-	#ifdef VERTEX
-		vec4 position(mat4 proj, vec4 vertPos) {
-			z = vertPos.z;
-			return proj * vertPos;
-		}
-	#endif
+-- z = calculateZ( point1, point2, vanishingPoint )
+local function calculateZ(x1,y1, x2,y2, vapoX,vapoY)
+	local dx1    = x1 - vapoX
+	local dy1    = y1 - vapoY
+	local dx2    = x2 - vapoX
+	local dy2    = y2 - vapoY
+	local len2Sq = dx2*dx2 + dy2*dy2
+	return math.sqrt((dx1*dx1 + dy1*dy1) * len2Sq) / len2Sq -- Thanks, quickmath.com!
+	-- return math.sqrt(dx1*dx1+dy1*dy1) / math.sqrt(dx2*dx2+dy2*dy2)
+end
 
-	#ifdef PIXEL
-		uniform vec4 quad; // {x,y,w,h}
+local vec4 = {0,0,0,0}
 
-		vec4 effect(vec4 loveColor, Image tex, vec2 texUv, vec2 screenPos) {
-			texUv       = quad.xy + quad.zw * texUv/z;
-			vec4 sample = Texel(tex, texUv);
+local function sendVec4(shader, var, x,y,z,w)
+	vec4[1],vec4[2],vec4[3],vec4[4] = x,y,z,w
+	pcall(shader.send, shader, var, vec4)
+end
 
-			// DEBUG
-			if (1==0) {
-				if (mod(floor(texUv.x*64)+floor(texUv.y*64), 2) == 0) return vec4(1,0,0,1); // Show pixel grid (64x64 image).
-				if (sample.a == 0)                                    return vec4(1,1,1,1); // Show transparent pixels.
-				return sample;
-			}
-
-			return sample * loveColor;
-		}
-	#endif
-]]
-
-local function drawQuad(image, x1,y1,x2,y2,x3,y3,x4,y4, u,v,uvW,uvH)
-	local len12 = math.sqrt((x2-x1)^2 + (y2-y1)^2)
-	local len23 = math.sqrt((x3-x2)^2 + (y3-y2)^2)
-	local len34 = math.sqrt((x4-x3)^2 + (y4-y3)^2)
-	local len41 = math.sqrt((x1-x4)^2 + (y1-y4)^2)
-
+local function drawPerspectiveCorrectQuad(image, x1,y1,x2,y2,x3,y3,x4,y4, u,v,uvW,uvH)
 	-- Calculate fake z-values to fix the perspective.
-	-- (What we do here is enough for our purposes. This will only work for quads with certain shapes.)
 	local z1 = 1
 	local z2 = 1
-	local z3 = len12/len34
-	local z4 = len12/len34
+	local z3 = 1
+	local z4 = 1
+
+	local vapo23And41X,vapo23And41Y = intersectLines(x2,y2,x3,y3, x4,y4,x1,y1)
+	local vapo12And34X,vapo12And34Y = intersectLines(x1,y1,x2,y2, x3,y3,x4,y4)
+
+	--[[ DEBUG: Show vanishing points.
+	if vapo23And41X then  LG.circle("fill", vapo23And41X,vapo23And41Y, 3)  end
+	if vapo12And34X then  LG.circle("fill", vapo12And34X,vapo12And34Y, 3)  end
+	--]]
+
+	if vapo23And41X then  z4 = calculateZ(x1,y1, x4,y4, vapo23And41X,vapo23And41Y)  end
+	if vapo12And34X then  z2 = calculateZ(x1,y1, x2,y2, vapo12And34X,vapo12And34Y)  end
+
+	if vapo23And41X and vapo12And34X then
+		local vapo13X,vapo13Y = intersectLines(x1,y1,x3,y3, vapo23And41X,vapo23And41Y,vapo12And34X,vapo12And34Y)
+		z3 = not vapo13X and 1 or
+		     calculateZ(x1,y1, x3,y3, vapo13X,vapo13Y)
+	elseif vapo23And41X then
+		z3 = calculateZ(x2,y2, x3,y3, vapo23And41X,vapo23And41Y)
+	elseif vapo12And34X then
+		z3 = calculateZ(x4,y4, x3,y3, vapo12And34X,vapo12And34Y)
+	end
 
 	local vert = vertices[1] ; vert[1],vert[2],vert[3], vert[4],vert[5] = x1,y1,1/z1, 0,0
 	local vert = vertices[2] ; vert[1],vert[2],vert[3], vert[4],vert[5] = x2,y2,1/z2, 1/z2,0
 	local vert = vertices[3] ; vert[1],vert[2],vert[3], vert[4],vert[5] = x3,y3,1/z3, 1/z3,1/z3
 	local vert = vertices[4] ; vert[1],vert[2],vert[3], vert[4],vert[5] = x4,y4,1/z4, 0,1/z4
 
-	mesh:setTexture(image)
-	mesh:setVertices(vertices)
-	pcall(quadShader.send, quadShader, "quad", {u,v,uvW,uvH})
+	-- Draw!
+	quadMesh:setTexture(image)
+	quadMesh:setVertices(vertices)
+	sendVec4(quadShader, "quad", u,v,uvW,uvH)
 
 	LG.setShader(quadShader)
-	LG.draw(mesh)
+	LG.draw(quadMesh)
 	LG.setShader(nil)
 
 	--[[ DEBUG: Show z-values.
 	local r,g,b,a = LG.getColor()
+	LG.setColor(0, 0, 0)
+	LG.print(string.format("%.4f",z1), x1+.5,y1+.5, 0, .5)
+	LG.print(string.format("%.4f",z2), x2+.5,y2+.5, 0, .5)
+	LG.print(string.format("%.4f",z3), x3+.5,y3+.5, 0, .5)
+	LG.print(string.format("%.4f",z4), x4+.5,y4+.5, 0, .5)
 	LG.setColor(1, 1, 1)
 	LG.print(string.format("%.4f",z1), x1,y1, 0, .5)
 	LG.print(string.format("%.4f",z2), x2,y2, 0, .5)
@@ -165,7 +225,6 @@ function love.draw()
 			-- void
 
 		else
-			local scaleX       = e.flip and -1 or 1
 			local iw,ih        = images.sprites:getDimensions()
 			local qx,qy, qw,qh = e.quad:getViewport()
 			local w,h          = qw,qh
@@ -174,7 +233,7 @@ function love.draw()
 			local dxR = lightSource.x - (e.x+w/2) -- right edge of entity
 			local dy  = lightSource.y - e.y
 
-			local SCALE = .7 -- How long the shadows should be.
+			local SCALE = .7 -- How long the shadows should be.  @Incomplete: Light height.
 			dxL = dxL * SCALE
 			dxR = dxR * SCALE
 			dy  = dy  * SCALE
@@ -195,7 +254,7 @@ function love.draw()
 			end
 
 			LG.setColor(0, 0, 0)
-			drawQuad(images.sprites, x1,y1,x2,y2,x3,y3,x4,y4, u1,v1,u2-u1,v4-v1)
+			drawPerspectiveCorrectQuad(images.sprites, x1,y1,x2,y2,x3,y3,x4,y4, u1,v1,u2-u1,v4-v1)
 		end
 	end
 
@@ -206,15 +265,15 @@ function love.draw()
 			LG.circle("fill", e.x,e.y-40, 5)
 
 			for i = 1, 6 do
-				local lineX = 10 * math.cos(i/6 * math.pi)
-				local lineY = 10 * math.sin(i/6 * math.pi)
+				local lineX = 10 * math.cos(i/6 * TAU/2)
+				local lineY = 10 * math.sin(i/6 * TAU/2)
 				LG.line(e.x+lineX,e.y-40+lineY, e.x-lineX,e.y-40-lineY)
 			end
 
 		else
 			local dx       = lightSource.x - e.x
 			local dy       = lightSource.y - e.y
-			local distance = math.sqrt((dx/WORLD_SCALE_X)^2 + (dy)^2)
+			local distance = math.sqrt((dx/WORLD_SCALE_X)^2 + dy^2)
 
 			local LIGHT_REACH       = 400
 			local TRANSITION_LENGTH = 20
