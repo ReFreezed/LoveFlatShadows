@@ -18,12 +18,16 @@ local quads = {
 	sign   = LG.newQuad(00,32, 32,32, images.sprites),
 }
 
-local RENDER_SCALE  = 2
-local WORLD_SCALE_X = 1.5
+local RENDER_SCALE     = 2
+local WORLD_SCALE_Y    = .7
+local MOVE_SPEED       = 65
+local LIGHT_MOVE_SPEED = 3
 
 
 
-local entities = {}
+local worldWidth  = LG.getWidth () / RENDER_SCALE
+local worldHeight = LG.getHeight() / RENDER_SCALE
+local entities    = {}
 
 local function addNewEntity(entityType, quad, x,y, flip)
 	local entity = {type=entityType, id=#entities, quad=quad, x=x,y=y, flip=flip}
@@ -31,13 +35,14 @@ local function addNewEntity(entityType, quad, x,y, flip)
 	return entity
 end
 
-local player = addNewEntity("player", quads.player, 200,150, false)
+local player = addNewEntity("player", quads.player, .5*worldWidth,.5*worldHeight, false)
 
 local rand = love.math.random
-for i = 1, 30 do  addNewEntity("tree", quads.tree, rand(400),rand(300), rand(2)==1)  end
-for i = 1, 4  do  addNewEntity("sign", quads.sign, rand(400),rand(300), rand(2)==1)  end
+for i = 1, 30 do  addNewEntity("tree", quads.tree, rand(worldWidth),rand(worldHeight), rand(2)==1)  end
+for i = 1, 4  do  addNewEntity("sign", quads.sign, rand(worldWidth),rand(worldHeight), rand(2)==1)  end
 
 local lightSource = addNewEntity("light", nil, 0,0, false)
+lightSource.z     = 50
 
 
 
@@ -98,12 +103,15 @@ function love.update(dt)
 	if love.keyboard.isDown"up"    then  moveY = moveY - 1  end
 	if love.keyboard.isDown"down"  then  moveY = moveY + 1  end
 
-	player.x = player.x + WORLD_SCALE_X*50*moveX*dt
-	player.y = player.y +               50*moveY*dt
+	player.x = player.x + MOVE_SPEED*moveX*dt
+	player.y = player.y + MOVE_SPEED*moveY*dt*WORLD_SCALE_Y
 	if moveX ~= 0 then  player.flip = (moveX < 0)  end
 
-	lightSource.x = love.mouse.getX() / RENDER_SCALE
-	lightSource.y = love.mouse.getY() / RENDER_SCALE
+	lightSource.x = love.window.hasMouseFocus() and love.mouse.getX()/RENDER_SCALE or player.x
+	lightSource.y = love.window.hasMouseFocus() and love.mouse.getY()/RENDER_SCALE or player.y
+
+	if love.keyboard.isDown"pageup"   then  lightSource.z = math.max(lightSource.z*(1*LIGHT_MOVE_SPEED)^dt, 32)  end
+	if love.keyboard.isDown"pagedown" then  lightSource.z = math.max(lightSource.z*(1/LIGHT_MOVE_SPEED)^dt, 32)  end
 end
 
 
@@ -216,8 +224,8 @@ function love.draw()
 
 	-- Light (on ground).
 	local w,h = images.light:getDimensions()
-	LG.setColor(.3, .6, .3) ; LG.draw(images.light, lightSource.x,lightSource.y, 0, WORLD_SCALE_X*15,15, w/2,h/2)
-	LG.setColor(1, 1, 1)    ; LG.draw(images.light, lightSource.x,lightSource.y, 0, WORLD_SCALE_X*1,1,   w/2,h/2)
+	LG.setColor(.3, .6, .3) ; LG.draw(images.light, lightSource.x,lightSource.y, 0, 25,25*WORLD_SCALE_Y, w/2,h/2)
+	LG.setColor(1, 1, 1)    ; LG.draw(images.light, lightSource.x,lightSource.y, 0, 01,01*WORLD_SCALE_Y, w/2,h/2)
 
 	-- Entity shadows.
 	for _, e in ipairs(entities) do
@@ -225,28 +233,50 @@ function love.draw()
 			-- void
 
 		else
-			local iw,ih        = images.sprites:getDimensions()
-			local qx,qy, qw,qh = e.quad:getViewport()
-			local w,h          = qw,qh
+			local iw,ih      = images.sprites:getDimensions()
+			local qx,qy, w,h = e.quad:getViewport()
 
-			local dxL = lightSource.x - (e.x-w/2) -- left edge of entity
-			local dxR = lightSource.x - (e.x+w/2) -- right edge of entity
-			local dy  = lightSource.y - e.y
+			--
+			--          x light
+			--         ##
+			--        ####
+			--       / ##
+			--      /  ||opposite
+			--     /   ||
+			--  __/θ___||__________
+			--   adjacent
+			--
+			--  tanθ     = opposite / adjacent
+			--  adjacent = opposite / tanθ
+			--
+			local shadowLength = h / math.tan(-math.atan2(math.max(lightSource.z-h, .0001), e.y-lightSource.y))
 
-			local SCALE = .7 -- How long the shadows should be.  @Incomplete: Light height.
-			dxL = dxL * SCALE
-			dxR = dxR * SCALE
-			dy  = dy  * SCALE
+			--
+			--  adjacent
+			--   +----+
+			--    \θ  |
+			--     \  |O opposite
+			--      \ /|\
+			--       \/ \
+			--        x light
+			--
+			--  tanθ     = opposite / adjacent
+			--  adjacent = opposite / tanθ
+			--
+			local angleL  = math.atan2(lightSource.y-e.y, (e.x-w/2)-lightSource.x)
+			local angleR  = math.atan2(lightSource.y-e.y, (e.x+w/2)-lightSource.x)
+			local offsetL = shadowLength / math.tan(angleL) / 2
+			local offsetR = shadowLength / math.tan(angleR) / 2
 
-			local x1, y1 = e.x-w/2-dxL, e.y-dy -- top left
-			local x2, y2 = e.x+w/2-dxR, e.y-dy -- top right
-			local x3, y3 = e.x+w/2    , e.y    -- bottom right
-			local x4, y4 = e.x-w/2    , e.y    -- bottom left
+			local x1, y1 = e.x-w/2+offsetL, e.y-shadowLength -- top left
+			local x2, y2 = e.x+w/2+offsetR, e.y-shadowLength -- top right
+			local x3, y3 = e.x+w/2, e.y -- bottom right
+			local x4, y4 = e.x-w/2, e.y -- bottom left
 
-			local u1, v1 = (qx   )/iw, (qy   )/ih -- top left
-			local u2, v2 = (qx+qw)/iw, (qy   )/ih -- top right
-			local u3, v3 = (qx+qw)/iw, (qy+qh)/ih -- bottom right
-			local u4, v4 = (qx   )/iw, (qy+qh)/ih -- bottom left
+			local u1, v1 = (qx  )/iw, (qy  )/ih -- top left
+			local u2, v2 = (qx+w)/iw, (qy  )/ih -- top right
+			local u3, v3 = (qx+w)/iw, (qy+h)/ih -- bottom right
+			local u4, v4 = (qx  )/iw, (qy+h)/ih -- bottom left
 
 			if e.flip then
 				u1,u2 = u2,u1
@@ -262,21 +292,21 @@ function love.draw()
 	for _, e in ipairs(entities) do
 		if e.type == "light" then
 			LG.setColor(1, 1, 1)
-			LG.circle("fill", e.x,e.y-40, 5)
+			LG.circle("fill", e.x,e.y-e.z, 5)
 
 			for i = 1, 6 do
 				local lineX = 10 * math.cos(i/6 * TAU/2)
 				local lineY = 10 * math.sin(i/6 * TAU/2)
-				LG.line(e.x+lineX,e.y-40+lineY, e.x-lineX,e.y-40-lineY)
+				LG.line(e.x+lineX,e.y-e.z+lineY, e.x-lineX,e.y-e.z-lineY)
 			end
 
 		else
-			local dx       = lightSource.x - e.x
-			local dy       = lightSource.y - e.y
-			local distance = math.sqrt((dx/WORLD_SCALE_X)^2 + dy^2)
-
 			local LIGHT_REACH       = 400
 			local TRANSITION_LENGTH = 20
+
+			local dx       = lightSource.x - e.x
+			local dy       = lightSource.y - e.y
+			local distance = math.sqrt(dx^2 + (dy/WORLD_SCALE_Y)^2)
 
 			local lightDistance = clamp(1 - distance / LIGHT_REACH      , 0, 1) -- Darker if farther away.
 			local lightFacing   = clamp(1 + dy       / TRANSITION_LENGTH, 0, 1) -- Darker if facing away.
@@ -293,7 +323,7 @@ function love.draw()
 	-- Info.
 	LG.origin()
 	LG.setColor(1, 1, 1)
-	LG.print("Arrow keys = move player\nMouse = move light", 3,1)
+	LG.print("Arrow keys = move player\nMouse = move light\nPageUp/PageDown = raise/lower light", 3,1)
 end
 
 
